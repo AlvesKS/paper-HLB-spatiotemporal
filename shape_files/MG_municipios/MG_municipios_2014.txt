@@ -1,0 +1,19 @@
+MALHA MUNICIPAL DE MINAS GERAIS
+
+Sistema de Coordenadas Geográficas 
+Datum WGS84
+Escala: 1:250.000
+Fonte: Instituto Brasileiro de Geografia e Estatística - IBGE, 2014 (Datum original SIRGAS 2000)
+
+NOTA TÉCNICA
+
+Os dados forma produzidos pelo Instituto Brasileiro de Geografia e Estatística. 
+
+Os arquivos desta disseminação representam a divisão político - administrativa municipal do Brasil, de  acordo  com  a  estrutura  político -administrativa  vigente  em 01/07/2014, data  de referência das Estimativas Populacionais de 2014 (IBGE - Leia-me malha digital 2014). Referência: ftp://geoftp.ibge.gov.br/malhas_digitais/municipio_2014/Leia-me_Malha_2014.pdf
+
+
+Arquivo original e informações disponíveis para download no ftp do IBGE: 
+
+ftp://geoftp.ibge.gov.br/malhas_digitais/municipio_2014/MG/
+
+(acesso em 03 de fevereiro de 2016) 
