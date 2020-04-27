@@ -1,0 +1,2365 @@
+---
+title: "Untitled"
+author: "Kaique S Alves"
+date: "12/09/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Packages 
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(gsheet)
+library(ggthemes)
+library(viridis)
+library(rnaturalearth)
+library(rnaturalearthhires)
+library(sp)
+library(ggsn)
+library(gstat)
+library(rgdal)
+library(raster)
+library(sf)
+library(effects)
+library(spatstat)
+library(spatialEco)
+library(agricolae)
+library(DescTools)
+library(lme4)
+library(ggridges)
+library(factoextra)
+library(FactoMineR)
+library(ggmosaic)
+```
+
+# Global theme
+
+```{r}
+theme_set(theme_light())
+```
+
+
+# Load data
+
+The data are stored in a google sheets file. Below we load it using the gsheet2tbl function from the gsheet package.
+
+```{r}
+hlbMG <- gsheet2tbl("https://docs.google.com/spreadsheets/d/1OBz-YtkZdCAWvVYZnntUSndxYRS0WRwV_H97syNZQRs/edit?usp=sharing")
+```
+
+## See the data
+
+```{r}
+hlbMG
+```
+
+## Data transformation
+
+Here, I am creating a variable for the presence or absence of HLB
+
+```{r}
+
+hlbMG <- hlbMG %>%
+  mutate(Incidencia = case_when(Incidencia >= 0 ~ Incidencia,
+                                Incidencia == NA_character_ ~ 0 )) %>% 
+  mutate(presenca = case_when(
+    Incidencia == 0 ~ "Absent",
+    Incidencia > 0 ~ "Present"
+  ))
+
+```
+
+Transform the data frame to the tidy format or long format
+
+```{r}
+hlb <- hlbMG %>%
+  gather(year, count, -c(1:11, 34:36)) %>%
+   
+  separate(year, c("year", "Semester")) %>% #separate the column year in two columns 
+  
+  
+  mutate(count = replace(count, is.na(count), 0),
+         count = as.numeric(count) # replace Na by 0
+    
+  ) %>%
+  mutate(prevalencia = case_when(count == 0 ~ 0,
+                                 count > 0 ~ 1)) %>%  # make the prevalence binomial 
+  mutate(lat = as.numeric(lat),
+         lon = as.numeric(lon)) %>% 
+  filter(!is.na(lon)) %>% 
+  filter(lat < -18.33 | lon > -48 ) %>% 
+  mutate(area = as.numeric(area)) %>% 
+  mutate(especie = case_when(especie == "Laranja" ~ "Sweet orange",
+                             especie == "Limão" ~ "Lemon",
+                             especie == "Tangerina" ~ "Mandarins",
+                             especie == "Lima ácida" ~ "Acid lime")) %>% 
+  mutate(regiao_geografica =  case_when(regiao_geografica == "CENTRAL" ~ "Central" ,
+                                        regiao_geografica == "TRIÂNGULO MINEIRO" ~"West",
+                                        regiao_geografica == "SUL DE MINAS" ~ "South"))
+
+
+```
+
+# Summary 
+
+Number of records
+```{r}
+length(hlbMG$codigo)
+```
+
+
+Number of years monitored
+```{r}
+hlb %>% 
+  summarise(N_years = length(unique(year)))
+
+```
+
+Number of Municipalities monitored
+
+```{r}
+hlb %>% 
+  summarise(N_mun = length(unique(municipio)))
+```
+
+## Farms
+N. of farms monitored 
+```{r}
+hlb %>%
+  filter(year == "2018", Semester == 2) %>%
+  group_by(regiao_geografica, municipio, produtor, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  summarise(n = n())
+```
+
+
+Some new entries had no region alocated for it, so I just completed with the previous information using the municipality as reference
+
+```{r}
+aa = hlb %>% 
+  group_by(municipio, regiao_geografica) %>%
+   summarize(n = length(unique(propriedade))) %>% 
+  filter(!is.na(regiao_geografica)) %>% 
+  mutate(region = regiao_geografica) %>% 
+  dplyr::select(municipio, region)
+  
+
+hh = data.frame()
+muni = unique(hlb$municipio)
+for(i in 1:length(muni)){
+aa2  = aa %>% 
+  filter(municipio == muni[i])
+
+if(nrow(aa2) == 0){aa2 = data.frame(municipio = NA, region = NA)}
+
+  hh2 = hlb %>% 
+    filter(municipio == muni[i]) %>% 
+    mutate(region = aa2$region)
+  
+hh = hh %>% 
+  bind_rows(hh2)
+}
+rm(aa, aa2, hh2, muni)
+```
+
+N. of farms by municipality 
+```{r}
+hh %>%
+  group_by(municipio, region) %>%
+  summarize(n = length(unique(propriedade))) %>% 
+  arrange(-n)
+```
+
+N. farms by region 
+
+```{r}
+hh %>%
+  filter(year == "2018", Semester == 2) %>%
+  group_by(regiao_geografica, municipio, produtor,  presenca, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(regiao_geografica) %>% 
+  summarise(n = n())
+```
+
+
+
+## Area
+Farms' area
+
+```{r fig.height=3, fig.width=6, message=FALSE, warning=FALSE}
+hh %>% 
+  dplyr::select(region, municipio, area, presenca) %>% 
+  ggplot(aes(area)) +
+  geom_histogram()+
+  facet_wrap(~presenca, scales = "free_x")
+
+```
+
+
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>% 
+  group_by(region) %>% 
+  summarize(median_area = median(area, na.rm = T),
+            mean_area = mean(area, na.rm = T)) %>%
+  arrange(desc(mean_area))
+```
+
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>% 
+  group_by(especie) %>% 
+  summarise(area = mean(area, na.rm = T))
+```
+
+
+
+Mean/median farm's area by municipality 
+
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>% 
+  group_by(municipio) %>% 
+  summarize(median_area = median(area, na.rm = T),
+            mean_area = mean(area, na.rm = T)) %>%
+  arrange(desc(mean_area))
+
+
+```
+
+
+Number and percent of farms with and without HLB
+
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(regiao_geografica, municipio, produtor,lat,lon, presenca, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(propriedade) %>% 
+  # summarise(presenca = sum(prevalencia)>0) %>% 
+  group_by(presenca) %>% 
+  summarise(n = n(), 
+            percent = 100*n/1488)
+
+```
+
+
+Number and percent of farms with and without HLB per region
+```{r}
+hh %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, produtor, presenca,lat,lon, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(presenca, region) %>% 
+  summarise(n  = n(),
+            percent = (n /852 )*100) 
+```
+## Classification by size
+
+```{r}
+hh_hlb = hh  %>% 
+  filter(!is.na(area)) %>%
+  mutate(class = case_when(area <= 10 ~ "Mini",
+                           area > 10 & area <= 50  ~ "Small",
+                           area > 50 & area <= 200  ~ "Medium",
+                           area > 200  ~ "Large")) %>% 
+  mutate(class = factor(class, levels = c("Mini", "Small", "Medium", "Large"))) 
+```
+
+Number of orchards by orchard size
+```{r}
+hh_hlb%>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, produtor,class, presenca,lat,lon, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(presenca, class) %>% 
+  summarise(n  = n(),
+            percent = (n /1487)*100
+            )
+```
+
+
+
+Number of orchards by species
+```{r}
+hh %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, produtor,especie, presenca,lat,lon, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(presenca, especie) %>% 
+  summarise(n  = n(),
+            percent = (n /1488)*100
+            )
+```
+
+
+Number and percent of municipalities with and without HLB  
+```{r}
+hh %>%
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, propriedade, produtor,lat,lon, presenca) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(municipio) %>% 
+  mutate(presenca = max(presenca)) %>%
+  group_by(presenca) %>%
+  summarise(n = length(unique(municipio)), 
+            percent = round(100*n/118, 2))
+
+
+# max(c("Absent","Present"))
+```
+
+
+
+Mean area, median and total of farms with and without HLB
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>% 
+  group_by(municipio, region, propriedade,lat,lon, presenca) %>% 
+  summarize(area = mean(area ))%>% 
+  group_by(presenca) %>%
+  summarize(
+    median_area = median(area, na.rm = T),
+    mean_area = mean(area, na.rm = T),
+    total_area = sum(area, na.rm = T)
+  )
+```
+
+
+Number of farms over the years
+```{r}
+hh %>%
+  # filter(prevalencia == 1) %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  # filter(year > 2010) %>%
+  group_by(year, prevalencia, Semester) %>%
+  filter(prevalencia>0) %>% 
+  summarise(n = n()) %>% 
+  ggplot(aes(year, n, fill = Semester))+
+  geom_col()+
+  scale_fill_grey()
+```
+
+
+Number of farms over the years per region
+```{r}
+hh %>%
+  # filter(year > 2010) %>%
+  group_by(year, region, prevalencia, Semester) %>%
+  filter(prevalencia>0) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(year = as.numeric(year)) %>% 
+  ggplot(aes(year, n, fill = Semester))+
+  geom_area(color = "white")+
+  scale_fill_calc()+
+  theme_minimal_hgrid() +
+  facet_wrap(~region)+
+  labs(x = "Year",y = "Removals")
+```
+
+## Removing
+Total plants
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>% 
+  summarise(sum(total_plantas))
+```
+
+
+Total of plants removed
+```{r}
+hh %>% 
+  summarize(percent = (sum(count)/25756336)*100,
+            count = (sum(count)))
+```
+
+
+
+Total of plants removed by specie of citrus
+```{r}
+hh %>% 
+  group_by(especie) %>% 
+  summarize(percent = (sum(count)/25756336)*100,
+            count = (sum(count)))
+```
+
+
+```{r}
+hh %>% 
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, produtor,especie, presenca, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(especie, region) %>% 
+  summarise(n = n()) %>% 
+  ggplot(aes(especie, n, fill = region))+
+  geom_col()
+```
+
+## Mandarins
+```{r}
+erad_mandarins = hh_hlb %>% 
+  mutate(year =  as.numeric(year)) %>% 
+  group_by(year, Semester,region,especie) %>%
+  filter(especie %in% c("Mandarins")) %>% 
+  unite(new_clas, region, especie, sep ="/", remove = F) %>%
+  filter(!new_clas %in% c("Central/Sweet orange","West/Mandarins")) %>% 
+  summarise(errad = sum(count)) %>% 
+  filter(errad>0) %>% 
+  ggplot(aes(year, errad, color = Semester))+
+  geom_area(alpha = 0.2, color = "white",aes(fill = Semester))+
+  geom_line(size =.7)+
+  geom_point()+
+  facet_wrap(~region)+
+  theme_minimal_hgrid(font_size = 10)+
+  scale_color_calc()+
+  guides(fill =F)+
+  scale_x_continuous(breaks = seq(2006,2018, by = 2), limits = c(2005, 2018),
+                     guide = guide_axis(n.dodge = 1))+
+  scale_fill_manual(name = "total",values = c("black","black"))+
+  theme(legend.position = "bottom")+
+  labs(x = "Year", y = "Eradications")
+  # ggsave("figs/erradi_semest_mandarins.png",height = 3,width = 6)
+```
+
+## Sweet orange
+```{r}
+erad_orange = hh_hlb %>% 
+  mutate(year =  as.numeric(year)) %>% 
+  group_by(year, Semester,region,especie) %>%
+  filter(especie %in% c("Sweet orange")) %>% 
+  unite(new_clas, region, especie, sep ="/", remove = F) %>%
+  filter(!new_clas %in% c("Central/Sweet orange","West/Mandarins")) %>% 
+  summarise(errad = sum(count)) %>% 
+  filter(errad>0) %>% 
+  ggplot(aes(year, errad, color = Semester))+
+  geom_area(alpha = 0.2, color = "white",aes(fill = Semester))+
+  geom_line(size =.7)+
+  geom_point()+
+  facet_wrap(~region)+
+  theme_minimal_hgrid(font_size = 10)+
+  scale_color_calc()+
+  guides(fill =F)+
+  scale_x_continuous(breaks = seq(2006,2018, by = 2), limits = c(2005, 2018),
+                     guide = guide_axis(n.dodge = 1))+
+  scale_fill_manual(name = "total",values = c("black","black"))+
+  theme(legend.position = "none")+
+  labs(x = "Year", y = "Eradications")
+  # ggsave("figs/erradi_semest_orange.png",height = 3,width = 6)
+```
+
+```{r}
+plot_grid(erad_orange,erad_mandarins,
+          rel_heights = c(0.85,1),
+          nrow =2, labels = "AUTO")
+  ggsave("figs/erradications.png",height = 4,width = 6)
+```
+
+
+
+## table 1
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  # group_by(region, municipio, class, produtor, lat, lon, especie, presenca, propriedade) %>%
+  # summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  # filter(presenca != "Absent") %>% 
+  group_by(region, especie) %>% 
+  summarise(n = n(),
+            area =  mean(area),
+            prev = sum((presenca == "Present")*1),
+            perc = round((prev/n)*100,2),
+            n_plants = sum(total_plantas),
+            eradic =sum(cum_erradic),
+            perc_eradic = round((eradic/n_plants)*100,2)) %>% 
+  arrange(desc(region))
+```
+
+## Mosaic plot
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(region,class, especie) %>% 
+  summarise(n = n(),
+            area =  mean(area),
+            prev = sum((presenca == "Present")*1),
+            perc = round((prev/n)*100,2),
+            n_plants = sum(total_plantas),
+            eradic =sum(cum_erradic),
+            perc_eradic = round((eradic/n_plants)*100,2)) %>% 
+  filter(!especie %in% c("Lemon","Acid lime")) %>% 
+  arrange(especie) %>% 
+
+  ggplot()+
+  geom_mosaic(aes(x = product(region, class), weight = n, fill = region),
+              color = NA,size =0.5,
+              alpha = 1)+
+  scale_fill_manual(values =c("#E69F00","#00BFC4","#003300"))+
+  theme_tufte(ticks = FALSE, base_family = "sans")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0),
+        legend.position="none")+
+  labs(x = "", y = "", fill ="")+
+  facet_wrap(~especie, scales = "free")
+# ggsave("figs/mosaic_rgio_area.png",height = 3.5,width = 6)
+```
+
+
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  # group_by(region, municipio, class, produtor, lat, lon, especie, presenca, propriedade) %>%
+  # summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  # filter(presenca != "Absent") %>% 
+  group_by(region) %>%
+  summarise(n = n(),
+            area =  mean(area),
+            prev = sum((presenca == "Present")*1),
+            perc = round((prev/n)*100,2),
+            n_plants = sum(total_plantas),
+            eradic =sum(cum_erradic),
+            perc_eradic = round((eradic/n_plants)*100,2)) %>% 
+  arrange(desc(region))
+
+```
+
+
+
+## figure combo
+
+```{r fig.height=4, fig.width=10}
+plot_grid(
+  hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(region) %>% 
+  summarise(`Non-infected` = (n()-sum((presenca == "Present")*1)), Infected = sum((presenca == "Present")*1)) %>% 
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(region, number, fill = count_type)) +
+  geom_col()+
+  scale_fill_manual(values = c("orange","darkgreen"))+
+  ylim(0,1200)+
+  labs(x = "Region", 
+       y = "Number of orchads",
+       fill = "")+theme(legend.position = "none",axis.text.x = element_text(angle = 45, hjust = 1)),
+# specie
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(especie) %>% 
+  summarise(`Non-infected` = (n()-sum((presenca == "Present")*1)), Infected = sum((presenca == "Present")*1)) %>% 
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(especie, number, fill = count_type)) +
+  geom_col()+
+  ylim(0,1200)+
+  scale_fill_manual(values = c("orange","darkgreen"))+
+  labs(x = "Citrus specie", 
+       y = "Number of orchads",
+       fill = "")+theme(legend.position = "none",axis.text.x = element_text(angle = 45, hjust = 1))
+,
+# size
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(class) %>% 
+  summarise(`Not present` = (n()-sum((presenca == "Present")*1)),
+            `HLB present` = sum((presenca == "Present")*1)) %>% 
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(class, number, fill = count_type)) +
+  geom_col()+
+  ylim(0,1200)+
+  scale_fill_manual(values = c("orange","darkgreen"))+
+  labs(x = "Size", 
+       y = "Number of orchads",
+       fill = "")+theme(axis.text.x = element_text(angle = 45, hjust = 1)), 
+labels = "AUTO",  nrow = 1,scale = 0.9, rel_widths = c(0.6,0.6,1), align = "h"
+)
+
+# ggsave("figs/combo1.png", dpi = 300, height = 4, width = 8)
+```
+
+```{r}
+combo_plants = plot_grid(
+  hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(region) %>% 
+  summarise(`Non-infected` = sum(total_plantas)-sum(cum_erradic),Infected =sum(cum_erradic)) %>% 
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(region, number/1000000, fill = count_type)) +
+  geom_col()+
+  scale_fill_manual(values = c("darkred","steelblue"))+
+  labs(x = "Region", 
+       y = "Millions of plants",
+       fill = "")+theme(legend.position = "none"),
+# specie
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(especie) %>% 
+  summarise(`Non-infected` = sum(total_plantas)-sum(cum_erradic),Infected =sum(cum_erradic)) %>%  
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(especie, number/1000000, fill = count_type)) +
+  geom_col()+
+  scale_fill_manual(values = c("darkred","steelblue"))+
+  labs(x = "Citrus specie", 
+       y = "Millions of plants",
+       fill = "")+theme(legend.position = "none")
+,
+# size
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  ungroup() %>% 
+  group_by(class) %>% 
+  summarise(`Non-infected` = sum(total_plantas)-sum(cum_erradic),Infected =sum(cum_erradic)) %>%  
+  gather(2:3, key =  "count_type",value =  "number") %>% 
+  ggplot(aes(class, number/1000000, fill = count_type)) +
+  geom_col()+
+  scale_fill_manual(values = c("darkred","steelblue"))+
+  labs(x = "Size", 
+       y = "Millions of plants",
+       fill = "")+theme(legend.position = "none"), 
+labels = c("D","E","F"), nrow = 1,scale = 0.9
+)
+combo_plants
+```
+
+
+
+
+
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  # group_by(region, municipio, class, produtor, lat, lon, especie, presenca, propriedade) %>%
+  # summarise(N_farms = n()) %>% 
+  ungroup() %>%
+  # filter(presenca != "Absent") %>% 
+  group_by(region, especie) %>% 
+  summarise(n = n(),
+            prev = sum((presenca == "Present")*1),
+            perc = round((prev/n)*100,2)) %>% 
+  arrange(desc(region))
+```
+
+
+```{r}
+hh %>% 
+  group_by(especie) %>% 
+  summarize(count = (sum(count)/459254)*100)
+```
+
+```{r}
+hh %>% 
+  group_by(especie, region) %>% 
+  summarize(count = sum(count)) %>% 
+  ggplot(aes(especie, count, fill = region))+
+  geom_col()
+```
+
+
+Total of of plants erradicated per region
+
+```{r}
+hh %>% 
+  group_by(region) %>% 
+  summarize(count = (sum(count)),
+            percent = (sum(count)/459254)*100)
+```
+
+```{r}
+hh %>% 
+  group_by(codigo, municipio, produtor,region, propriedade, presenca) %>% 
+  summarize(Incidencia = mean(Incidencia)) %>%
+  filter(Incidencia > 0) %>%
+  ungroup() %>% 
+  summarize(
+    mean_Incidencia = mean(Incidencia),
+    sd_Incidencia = sd(Incidencia),
+    min_Incidencia = min(Incidencia),
+    max_Incidencia = max(Incidencia),
+    tird_incidencia = quantile(Incidencia, 0.75),
+    median_Incidencia = median(Incidencia),
+    second_incidencia = quantile(Incidencia, 0.25)
+  ) %>% 
+  gather(stats, value)
+```
+
+
+```{r}
+hh %>% 
+  group_by(codigo, municipio, produtor,region, propriedade, presenca) %>% 
+  summarize(Incidencia = mean(Incidencia)) %>%
+  filter(Incidencia > 0) %>%
+  ggplot(aes(Incidencia))+
+  geom_histogram(color = "white")
+```
+
+
+## table 2
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  group_by(region, municipio, class, produtor, lat, lon, especie, presenca, propriedade) %>%
+  summarise(N_farms = n()) %>% 
+  ungroup() %>% 
+  group_by(region, class) %>% 
+  summarise(n= n()) %>% 
+  arrange(desc(region))
+  
+
+```
+
+```{r}
+ hh_hlb %>% 
+  # filter(prevalencia == 1) %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(year==2018, Semester==2) %>% 
+  group_by(class) %>% 
+  summarise(erradicatyion = (sum(cum_erradic)/459254)*100)
+```
+
+```{r}
+
+hh_hlb %>% 
+  filter(presenca == "Present") %>% 
+  group_by(codigo, municipio, produtor, region, class, propriedade) %>% 
+  summarize(Incidencia = mean(Incidencia)) %>% 
+  ggplot(aes(class, Incidencia)) +
+  geom_jitter(alpha = 0.8, width=0.3, aes(color = region))+
+  geom_boxplot(fill = "white",outlier.color = NA, size = 1, alpha = 0.4)+
+  # facet_wrap(~region)+
+  labs(x = "field size", y = "Iincidence %", color ="")
+```
+
+specie and area
+
+
+
+# Temporal progress
+
+## Incidence
+
+```{r}
+plot_grid(
+hh_hlb %>% 
+  filter(presenca == "Present") %>%
+  group_by(region, municipio,total_plantas, propriedade, year) %>% 
+  summarise(incidence = sum(count)/unique(total_plantas)) %>% 
+  ggplot(aes(as.numeric(year), incidence, group = propriedade))+ 
+  geom_line(size = 0.3)+
+  facet_wrap(~region)+
+  labs(x = "", y  = "Number of plants removed"), 
+
+hh_hlb %>% 
+  # filter(presenca == "Present") %>%
+  group_by(region, municipio,total_plantas, propriedade) %>% 
+  mutate(cum_inc = cumsum(count)/total_plantas) %>%
+  # summarise(cum_inc = sum(cum_inc)) %>% 
+  ggplot(aes(as.numeric(year), cum_inc, group = propriedade))+ 
+  geom_line(size = 0.3)+
+  facet_wrap(~region)+
+  labs(x = "Years", y  = "Cummulative number of plants removed"),
+ nrow = 2
+)
+# ggsave("figs/removed_mun.png", dpi = 600, height = 7, width = 7)
+```
+
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>%
+  mutate(cum_erradic = cumsum(count)) %>%
+  # filter(year == "2018", Semester == 2) %>%
+  filter(presenca == "Present") %>%
+  filter(!especie %in% c("Acid lime", "Lemon")) %>%
+  group_by(region,especie, municipio, class, total_plantas, propriedade, year) %>%
+  # summarise(incidence = cum_erradic/total_plantas) %>% 
+  group_by(especie, class, region) %>%
+  summarise(n = n(),
+            med_inc =median(Incidencia),
+            mean_inc = mean(Incidencia),
+            sd_inc = sd(Incidencia)) %>%
+  unite(new_clas, region, especie, sep ="/", remove = F) %>%
+  filter(!new_clas %in% c("Central/Sweet orange","West/Mandarins")) %>% 
+  # arrange(region) %>% 
+  # ungroup() %>% 
+  # summarise(sum(n))
+  ggplot(aes(class, mean_inc,  group = especie ))+
+  geom_point(stat='summary', fun.y=sum) +
+  stat_summary(fun.y=sum, geom="line")+
+  facet_wrap(especie~region, scales = "free_y")+
+  labs(x = "Orchard size", y = "Incidence (%)")+
+  theme_minimal_grid()+
+  theme(legend.position = "none")
+
+# ggsave("figs/inc_region.png", dpi = 500, height = 6, width = 8)
+```
+
+```{r}
+library(ggforce)
+stat_box_data <- function(y, upper_limit = max(iris$Sepal.Length) * 1.15) {
+  return( 
+    data.frame(
+      y = 0.95 * upper_limit,
+      label = paste('N =', length(y))
+    )
+  )
+}
+```
+
+### Mandarins
+
+```{r}
+ inc_mandarins =  hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>%
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>% 
+  filter(presenca == "Present") %>%
+  filter(!especie %in% c("Acid lime", "Lemon")) %>%
+  unite(new_clas, region, especie, sep ="/", remove = F) %>%
+  filter(!new_clas %in% c("Central/Sweet orange","West/Mandarins"),
+         especie == "Mandarins") %>% 
+  group_by(region, municipio,class, especie,total_plantas, propriedade)%>% 
+  summarise(incidence = sum(cum_erradic)/total_plantas) %>% 
+  filter(incidence>0) %>%
+  group_by(region, class, especie) %>%
+  filter(incidence < quantile(incidence,0.99)) %>%
+  mutate(n = n()) %>%
+  ggplot(aes(class, incidence*100, group = class ))+
+  geom_jitter(alpha = 0.3, shape =1, width = .1, color = "gray30")+
+  geom_boxplot(fill = NA, outlier.color = NA, width = 0.5, color = "black")+
+  stat_summary(fun.data = stat_box_data, geom = "text", hjust = 0.5,vjust = -6,size=3)+
+  facet_wrap(~region)+
+  labs(x = "Orchard size", y = "Cumulative incidence (%)")+
+  theme_minimal_hgrid()+
+  theme(legend.position = "none", panel.spacing =  unit(2, "lines"))
+# ggsave("figs/inc_region_mandarins.png", dpi = 500, height = 4, width = 6)
+
+```
+
+
+### Sweet orange
+
+```{r}
+inc_orange = hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>%
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>% 
+  filter(presenca == "Present") %>%
+  filter(!especie %in% c("Acid lime", "Lemon")) %>%
+  unite(new_clas, region, especie, sep ="/", remove = F) %>%
+  filter(!new_clas %in% c("Central/Sweet orange","West/Mandarins"),
+         especie == "Sweet orange") %>% 
+  group_by(region, municipio,class, especie,total_plantas, propriedade)%>% 
+  summarise(incidence = sum(cum_erradic)/total_plantas) %>% 
+  filter(incidence>0) %>%
+  group_by(region, class, especie) %>%
+  filter(incidence < quantile(incidence,0.99)) %>% 
+  mutate(n = n()) %>%
+  ggplot(aes(class, incidence*100, group = class ))+
+  geom_jitter(alpha = 0.5, shape =1, width = .1, color = "gray30")+
+  geom_boxplot(fill = NA, outlier.color = NA, width = 0.5, color = "black")+
+  facet_wrap(~region)+
+  labs(x = "Orchard size", y = "Cumulative incidence (%)")+
+  stat_summary(fun.data = stat_box_data, geom = "text", hjust = 0.5,vjust = -6,size =3)+
+  theme_minimal_hgrid()+
+  theme(legend.position = "none", panel.spacing =  unit(2, "lines"))
+# ggsave("figs/inc_region_orange.png", dpi = 500, height = 4, width = 6)
+```
+
+```{r}
+plot_grid(inc_orange,inc_mandarins, labels = "AUTO", ncol = 1)
+ggsave("figs/incidence.png", dpi = 500, height = 6.5, width = 6)
+```
+
+
+### Region and class
+
+```{r}
+hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  filter(presenca == "Present") %>%
+  group_by(region, municipio, class, total_plantas, propriedade, year) %>% 
+  summarise(incidence = sum(count)/unique(total_plantas)) %>%
+  filter(incidence!=0) %>% 
+  group_by(region, class) %>% 
+  summarise(mean_inc = round(mean(incidence*100),2),
+            se_inc =round(sd(incidence*100)/sqrt(n()),2),
+            median = round(median(incidence*100),2),
+            q4 = round(quantile(incidence*100,1),2)) %>% 
+  arrange( desc(region))
+```
+
+### Species and class
+
+```{r}
+hh_hlb %>% 
+  filter(presenca == "Present") %>%
+  group_by(region, municipio, class, especie, total_plantas, propriedade, year) %>% 
+  summarise(incidence = sum(count)/unique(total_plantas)) %>%
+  filter(incidence!=0) %>% 
+  group_by(class, especie) %>% 
+  summarise(n = n(),
+            mean_inc = round(mean(incidence*100),2),
+            se_inc =round(sd(incidence*100)/sqrt(n()),2),
+            median = round(median(incidence*100),2),
+            q4 = round(quantile(incidence*100,1),2)) %>% 
+  arrange( desc(especie))
+```
+
+
+
+## Prevalence
+
+simple calculation of increasing of prevalence (number of farms)
+
+```{r}
+hh_hlb %>% 
+  group_by(propriedade, class, municipio, region) %>% 
+  mutate(report = cumsum(prevalencia)>0) %>% 
+  ungroup() %>% 
+  filter(report == TRUE) %>% 
+  group_by(region) %>%
+  summarise(prev_rate = sum(length(unique(propriedade)))/(max(as.numeric(year)) - min(as.numeric(year))), 
+            detection_year = min(as.numeric(year)),
+            (max(as.numeric(year)) - min(as.numeric(year))))
+```
+
+
+Function for fitting epidemic models
+```{r}
+# source("fit_lin.R")
+```
+
+
+#### By region
+
+```{r}
+years = unique(hh_hlb$year)
+cum_prev = data.frame()
+
+for(i in 1:length(years)){
+cc_prev = hh_hlb %>% 
+  filter(prevalencia == 1,
+         year <= years[i]) %>% 
+    group_by(region) %>% 
+  summarise(c_prev = length(unique(propriedade))) %>% 
+  mutate(year = as.numeric(years[i]))
+cum_prev = cum_prev %>% 
+  bind_rows(cc_prev)
+}
+
+total = hh_hlb %>% 
+    group_by(region) %>% 
+  summarise(total = length(unique(propriedade)))
+
+cum_prev_total = cum_prev %>% 
+  full_join(total) %>% 
+  mutate(prev_perc = c_prev/total)
+
+```
+
+```{r}
+# plot_grid(
+#  cum_prev_total%>% 
+#       ggplot(aes(year, c_prev))+
+#       geom_line(size = 1)+
+#       facet_wrap(~region),
+# 
+#  cum_prev_total%>% 
+#       ggplot(aes(year, prev_perc))+
+#       geom_line(size = 1)+
+#       facet_wrap(~region), nrow =2)
+  
+```
+
+
+Fitting models to the data and calculating the weighted absolute rate
+```{r message=FALSE, warning=FALSE}
+# inf_rate_prev = cum_prev_total %>% 
+#   ungroup() %>% 
+#    # filter(prev_perc>0) %>%
+#   group_by(region) %>% 
+#    summarise(r = fit_lin(time = year, y = prev_perc)$`Infection rate`[1],
+#             r_ci_lwr  = fit_lin(time = year, y = prev_perc)$`Infection rate`[1,3],
+#             r_ci_upr  = fit_lin(time =year, y = prev_perc)$`Infection rate`[1,4],
+#             model = rownames(fit_lin(time = year, y = prev_perc)$`Infection rate`)[1]) %>% 
+#   ungroup() %>% 
+#   mutate(shape = case_when(model == "Exponential" ~ 2 ,
+#                               model == "Monomolecular" ~ 2 ,
+#                               model == "Logistic" ~ 2 ,
+#                               model == "Gompertz" ~  0.999 )) %>% 
+#   mutate(r_scaled = r / (2*shape+2),
+#          r_cilwr_scale = r_ci_lwr / (2*shape+2),
+#          r_ciupr_scale = r_ci_upr / (2*shape+2)) 
+```
+
+Visualization of the infection rate (r)
+```{r}
+# inf_rate_prev %>% 
+# ggplot(aes(region, r, color = model))+
+#   geom_point(position = position_dodge(width = 0.3))+
+#   geom_errorbar(aes(ymin = r_ci_lwr, ymax = r_ci_upr), width = 0.2,position = position_dodge(width = 0.3))+
+#   scale_color_colorblind()
+```
+
+Visualization of the weigthed absolute rate
+```{r message=FALSE, warning=FALSE}
+# inf_rate_prev %>% 
+#     ggplot(aes(region, r_scaled, color = model))+
+#       geom_point(position = position_dodge(width = 0.3))+
+#       geom_errorbar(aes(ymin = r_cilwr_scale, ymax = r_ciupr_scale), width = 0.2,position = position_dodge(width = 0.3))+
+#       scale_color_colorblind()
+
+```
+
+
+#### By region and class
+Prevalence by region by class of size of farms 
+
+```{r}
+years = unique(hh_hlb$year)
+cum_prev = data.frame()
+
+for(i in 1:length(years)){
+cc_prev = hh_hlb %>% 
+  filter(prevalencia == 1,
+         year <= years[i]) %>% 
+    group_by(region, class) %>% 
+  summarise(c_prev = length(unique(codigo))) %>% 
+  mutate(year = as.numeric(years[i]))
+cum_prev = cum_prev %>% 
+  bind_rows(cc_prev)
+}
+
+total = hh_hlb %>% 
+    group_by(region, class) %>% 
+  summarise(total = length(unique(codigo)))
+
+cum_prev_total = cum_prev %>% 
+  full_join(total) %>% 
+  mutate(prev_perc = (c_prev/total)*100)
+```
+
+```{r}
+library(directlabels)
+```
+
+```{r}
+prev_plot = cum_prev_total%>% 
+  group_by(region, class) %>% 
+  mutate(max = max(c_prev)) %>% 
+      unite(lab, max,total,  sep = "/") %>% 
+  
+      ggplot(aes(year, prev_perc, color = class))+
+      geom_line(size = 1)+
+      geom_point()+
+      geom_dl(aes(label = lab), method = list(dl.trans(x = x + 0.2), "last.bumpup", cex = 0.6))+
+      # scale_color_viridis(direction = -1, discrete = T)+
+      scale_color_colorblind()+
+      facet_wrap(~region, nrow = 1)+
+      theme_minimal_grid()+
+      scale_x_continuous(breaks = seq(2006,2018,  by = 4), limits = c(2005, 2020))+
+      ylim(0,90)+
+      labs(x ="", y = "Prevalence (%)", color = "Orchard size")
+
+prev_plot
+
+```
+
+
+#### By region and class
+Prevalence by region by species  
+
+```{r}
+years = unique(hh_hlb$year)
+cum_prev2 = data.frame()
+
+for(i in 1:length(years)){
+cc_prev = hh_hlb %>% 
+  filter(prevalencia == 1,
+         year <= years[i]) %>% 
+    group_by(region,class, especie) %>% 
+  summarise(c_prev = length(unique(codigo))) %>% 
+  mutate(year = as.numeric(years[i]))
+cum_prev2 = cum_prev2 %>% 
+  bind_rows(cc_prev)
+}
+
+total = hh_hlb %>% 
+    group_by(region, class,especie) %>% 
+  summarise(total = length(unique(codigo)))
+
+cum_prev_total2 = cum_prev2 %>% 
+  full_join(total) %>% 
+  mutate(prev_perc = (c_prev/total)*100)
+```
+
+
+#### Orange West
+```{r}
+west_south_prev = cum_prev_total2%>%
+  filter(especie %in% c("Sweet orange")) %>%
+  filter(region %in% c("West","South")) %>% 
+  group_by(year,region) %>%
+  mutate(total_prev = sum(c_prev)) %>% 
+      ggplot()+
+      geom_area(aes(year, c_prev, fill= class),alpha = 0.6, color = "white")+
+      geom_point(aes(year,total_prev, color = "Nº Total"))+
+      geom_line(aes(year,total_prev, color = "Nº Total"))+
+      scale_fill_viridis(discrete = T)+
+      scale_color_manual(values = "black")+
+      theme_minimal_hgrid(font_size = 10)+
+      scale_x_continuous(breaks = seq(2006,2018, by = 2), limits = c(2005, 2018))+
+      theme(legend.position = "none")+
+      labs(x ="", y = "N. of HLB-affected orchards", fill = "Orchard size", color = "")+
+      facet_wrap(~region)
+west_south_prev
+# ggsave("figs/west_prevalence.png", dpi=600, width = 6, height = 4)
+```
+
+#### Orange South
+```{r}
+central_south_prev = cum_prev_total2%>%
+  filter(especie %in% c("Mandarins"),
+         region %in% c("South","Central")
+         ) %>% 
+  group_by(year,region) %>%
+  mutate(total_prev = sum(c_prev)) %>% 
+      ggplot()+
+      geom_area(aes(year, c_prev, fill= class),alpha = 0.6, color = "white")+
+      geom_point(aes(year,total_prev, color = "Nº Total"))+
+      geom_line(aes(year,total_prev, color = "Nº Total"))+
+      scale_fill_viridis(discrete = T)+
+      scale_color_manual(values = "black")+
+      theme_minimal_hgrid(font_size = 10)+
+      scale_x_continuous(breaks = seq(2006,2018, by = 2), limits = c(2005, 2018))+
+      theme(legend.position = "none")+
+      labs(x ="", y = "N. of HLB-affected orchards", fill = "Orchard size", color = "")+
+      facet_wrap(~region)
+central_south_prev
+
+```
+
+```{r}
+plot_grid(west_south_prev,
+          central_south_prev,
+          get_legend(west_south_prev+theme(legend.position = "bottom")),
+          rel_heights =  c(1,1,0.1),nrow = 3,
+          labels = c("A","B",""))
+ggsave("figs/prevalence.png", dpi=600, height =5.5,width = 7)
+```
+
+
+#### Mandarin South
+```{r}
+Mand_south_prev = cum_prev_total2%>%
+  filter(especie %in% c("Mandarins"),
+         region %in% c("South"),
+         # class != "Large"
+         ) %>% 
+      group_by(year) %>%
+  mutate(total_prev = sum(c_prev)) %>% 
+      ggplot()+
+      geom_area(aes(year, c_prev, fill= class),alpha = 0.6, color = "white")+
+      # geom_line(size = 1)+
+      geom_point(aes(year,total_prev, color = "Nº Total"))+
+      geom_line(aes(year,total_prev, color = "Nº Total"))+
+      # geom_line(size = 1)+
+      # geom_point()+
+      scale_fill_viridis(discrete = T)+
+      scale_color_manual(values = "black")+
+      theme_minimal_hgrid()+
+      scale_x_continuous(breaks = seq(2006,2018, by = 4), limits = c(2005, 2018))+
+      ylim(0,550)+
+      labs(x ="", y = "N. of HLB-affected orchards", fill = "",color = "")
+Mand_south_prev
+```
+
+
+
+
+#### Central
+```{r}
+central_prev = cum_prev_total2%>%
+  filter(especie %in% c("Mandarins")) %>%
+  filter(region %in% c("Central")) %>% 
+      group_by(year) %>%
+  mutate(total_prev = sum(c_prev)) %>% 
+      ggplot()+
+      geom_area(aes(year, c_prev, fill= class),alpha = 0.6, color = "white")+
+      # geom_line(size = 1)+
+      geom_point(aes(year,total_prev, color = "Nº Total"))+
+      geom_line(aes(year,total_prev, color = "Nº Total"))+
+      # geom_line(size = 1)+
+      # geom_point()+
+      scale_fill_viridis(discrete = T)+
+      scale_color_manual(values = "black")+
+      theme_minimal_hgrid()+
+      # facet_wrap( )+
+      scale_x_continuous(breaks = seq(2006,2018, by = 4), limits = c(2005, 2018))+
+      labs(x ="", y = "N. of HLB-affected orchards", fill = "")+
+      ylim(0,550)+
+      theme(legend.position = "none")
+central_prev
+
+```
+
+```{r}
+plot_grid(central_prev, Mand_south_prev, rel_widths = c(0.75,1),
+          labels = c("Central","South"))
+# ggsave("figs/mandarin_prevalence.png", dpi=600, width = 7,height =4)
+```
+
+
+
+
+## Infection rate
+
+```{r message=FALSE, warning=FALSE}
+inf_rate_prev = cum_prev_total %>% 
+  ungroup() %>% 
+   # filter(prev_perc>0) %>%
+  group_by(region, class) %>% 
+   summarise(r = fit_lin(time = year, y = prev_perc/100)$`Infection rate`[1],
+             se = fit_lin(time = year, y = prev_perc/100)$`Infection rate`[1,2],
+            r_ci_lwr  = fit_lin(time = year, y = prev_perc/100)$`Infection rate`[1,3],
+            r_ci_upr  = fit_lin(time =year, y = prev_perc/100)$`Infection rate`[1,4],
+            model = rownames(fit_lin(time = year, y = prev_perc/100)$`Infection rate`)[1]) %>% 
+  ungroup() %>% 
+  mutate(shape = case_when(model == "Exponential" ~ 2 ,
+                              model == "Monomolecular" ~ 2 ,
+                              model == "Logistic" ~ 2 ,
+                              model == "Gompertz" ~  0.999 )) %>% 
+  mutate(r_scaled = r / (2*shape+2),
+         r_cilwr_scale = r_ci_lwr / (2*shape+2),
+         r_ciupr_scale = r_ci_upr / (2*shape+2)) %>% 
+  
+  mutate(n = 1:11) %>% 
+  filter(n != 3)
+
+inf_rate_prev %>% 
+  arrange(desc(region))
+```
+
+infection rate
+```{r}
+inf_rate_prev %>% 
+ggplot(aes(class, r, color = model))+
+  geom_point(position = position_dodge(width = 0.3))+
+  geom_errorbar(aes(ymin = r_ci_lwr, ymax = r_ci_upr), width = 0.2,position = position_dodge(width = 0.3))+
+  scale_color_colorblind()+
+  # ylim(-0.25,2)+
+  facet_wrap(~region, scales = "free_x")
+```
+
+weighted absolute rate
+```{r message=FALSE, warning=FALSE}
+inf_rate_prev %>% 
+    ggplot(aes(class, r_scaled, color = model))+
+      geom_point(position = position_dodge(width = 0.3))+
+      geom_errorbar(aes(ymin = r_cilwr_scale, ymax = r_ciupr_scale), width = 0.2,position = position_dodge(width = 0.3))+
+      scale_color_colorblind()+
+      # ylim(-0.25,2)+
+      facet_wrap(~region, scales = "free_x")+
+      labs(x = "Farms size", y = "Infection rate rescaled")
+
+```
+
+
+# Spatial analysis 
+## UTM
+
+Converting degree decimal to UTM coordinates 
+```{r}
+lon = hh_hlb$lon
+lat = hh_hlb$lat
+xy <- data.frame(ID = 1:(length(lat)), lon, lat)
+coordinates(xy) <- c("lon", "lat")
+proj4string(xy) <- CRS("+init=epsg:4326")
+res <- spTransform(xy, CRS("+proj=utm +zone=23 ellps=WGS84"))
+coords_utm = as.data.frame(res)
+
+hlb_utm = hh_hlb %>% 
+  mutate(lon =coords_utm$lon, lat = coords_utm$lat)
+
+```
+
+## Maximum extent over year 
+
+```{r}
+d = NULL
+years = unique(hlb_utm$year)
+# for(k in 1:2){
+for(i in 4:length(years)){
+hlb_dist = hlb_utm %>%
+  group_by(codigo,produtor, lat, lon) %>% 
+  mutate(prevalencia = cumsum(count)) %>% 
+  filter(prevalencia>0) %>% 
+  ungroup() %>% 
+  filter(year ==years[i],
+         # Semester  =k
+         ) %>% 
+  dplyr::select(lon, lat) %>% 
+  mutate(ID = 1:length(lat),
+         ZZZ = 1)
+
+# coord = cbind(hlb_dist$lon,hlb_dist$lat)
+ 
+dist_df = hlb_dist %>% full_join(hlb_dist,c("ZZZ"="ZZZ")) %>% 
+        filter(ID.x != ID.y) %>% 
+        mutate(dist=sqrt((lon.x-lon.y)^2 + (lat.x-lat.y)^2))
+d[i] = max(dist_df$dist)/1000
+
+}
+max_dist =  data.frame(d = d, years = as.numeric(years)) %>% 
+  filter(!is.na(d)) %>% 
+ggplot(aes(years, d))+
+  # geom_line()+
+  geom_point(size = 3)+
+  geom_line(size =1)+
+  scale_y_continuous(breaks = seq(0, 1000, by =250))+
+  scale_x_continuous(breaks = seq(2006, 2018, by =2), limits = c(2007,2018))+
+  # geom_smooth(method = "lm")+
+  theme_minimal_hgrid(font_size = 10)+
+  labs(y = "Distance (km)", x = "Year")
+max_dist
+ggsave("figs/max_dist.png", dpi = 600, height =4, width = 4  )
+```
+rate
+
+```{r}
+max(d, na.rm = T)/(max(as.numeric(years))-min(as.numeric(years)))
+```
+
+
+
+## Nearest-neighbour distances
+
+### All state
+```{r}
+years = unique(hlb_utm$year)
+NND_all = NULL
+for(k in 1:2){
+for(i in 4:length(years)){
+try({
+  points = hlb_utm %>%
+    group_by(codigo,produtor, lat, lon) %>% 
+    mutate(inc = cumsum(count)) %>% 
+    ungroup() %>% 
+  filter(year == years[i]) %>%  
+  filter(prevalencia == 1) %>%
+  filter(Semester==k) %>% 
+  dplyr::select(lon, lat) %>% 
+  mutate(lon = lon, lat = lat)
+NND = cbind(year = years[i],
+            semester = k,
+            nnd = nndist(points$lon/1000, points$lat/1000))
+
+NND_all =rbind(NND_all,NND)},
+silent = T
+)
+}}
+head(NND_all)
+
+```
+
+
+Ploting the graph
+```{r}
+data.frame(NND_all) %>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+    filter(nnd>=0 & nnd<=1000) %>%
+  group_by(year) %>% 
+  mutate(quant = quantile(nnd,.95)) %>% 
+  ggplot(aes(nnd))+
+  geom_histogram(fill = "white", color = "black")+
+  geom_vline(aes(xintercept = quant, group =year), color = "red")+
+  scale_x_continuous(breaks = seq(0,50, by=10), limits = c(-1,30))+
+  labs(x = "Distância (km)", y = "Frequência")+
+  facet_wrap(~year)
+  # theme_minimal()
+```
+
+```{r}
+nnd_plot = data.frame(NND_all) %>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+    # filter(nnd>=0 & nnd<=1000, year == 2018) %>%
+  group_by(year) %>% 
+  ggplot(aes(nnd))+
+  geom_histogram(fill = "gray", color = "black")+
+  # geom_vline(aes(xintercept = quant, group =year), color = "red")+
+  # scale_x_continuous(breaks = seq(0,50, by=10), limits = c(-1,30))+
+  labs(x = "Distance (km)", y = "Frequency")+
+  theme_minimal_grid()
+nnd_plot
+
+data.frame(NND_all) %>% 
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>%
+  summarise(max((nnd)))
+```
+
+### Regional
+
+#### Sweet orange in the west
+
+##### Function
+
+```{r}
+nnd_regional = function(data, case, regions, species, start_season){
+if(case ==1){
+   data2 = data %>%
+     filter(region %in% "West") %>%
+     filter(especie %in% "Sweet orange")
+}
+  if(case ==2){
+   data2 = data %>%
+     filter(region %in% "South") %>%
+     filter(especie %in% "Sweet orange")
+  }
+    if(case ==3){
+   data2 = data %>%
+     filter(region %in% c("South","Central")) %>%
+     filter(especie %in% "Mandarins")
+    }
+  if(case ==4){
+   data2 = data 
+}
+years = unique(data2$year)
+NND =NULL
+NND_all = NULL
+for(k in 1:2){
+for(i in start_season:length(years)){
+try({
+  points = data2 %>%
+    group_by(codigo,produtor, lat, lon) %>% 
+    mutate(inc = cumsum(count)) %>% 
+    ungroup() %>% 
+  filter(year == years[i]) %>%  
+  filter(prevalencia == 1) %>%
+  filter(Semester==k) %>% 
+  dplyr::select(lon, lat) %>% 
+  mutate(lon = lon, lat = lat)
+NND = cbind(year = years[i],
+            semester = k,
+            nnd = nndist(points$lon/1000, points$lat/1000))
+
+NND_all =rbind(NND_all,NND)
+},
+silent = T
+)
+}}
+return(NND_all)
+# return(data2)
+}
+```
+
+
+```{r}
+start = 9
+max_distance = 100
+x_axis_spacing = 50
+max_nnd =100
+bins = 20
+plot_grid(
+as.data.frame(nnd_regional(data = hlb_utm,
+                           case = 1,
+                           regions = "West",
+                           species = "Sweet orange",
+                           start_season = start)) %>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+    filter(nnd>=0 & nnd<=max_nnd) %>%
+  group_by(year) %>% 
+  mutate(quant = quantile(nnd,.50)) %>% 
+  ggplot(aes(nnd))+
+  geom_histogram(color = "black",fill = "gray40", bins = bins)+
+  geom_vline(aes(xintercept = quant, group =year), color = "red")+
+  scale_x_continuous(breaks = seq(0,max_distance, by=x_axis_spacing), limits = c(-20,max_distance))+
+  labs(x = "Distance (km)", y = "Frequency")+
+  facet_wrap(~year, nrow = 1)+
+  theme_minimal_hgrid()
+,
+
+as.data.frame(nnd_regional(data = hlb_utm,
+                           case = 2,
+                           regions = "South",
+                           species = "Sweet orange",
+                           start_season = start)) %>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+    filter(nnd>=0 & nnd<=max_nnd) %>%
+  group_by(year) %>% 
+  mutate(quant = quantile(nnd,.50)) %>% 
+  ggplot(aes(nnd))+
+  geom_histogram(color = "black",fill = "gray40", bins = bins)+
+  geom_vline(aes(xintercept = quant, group =year), color = "red")+
+  scale_x_continuous(breaks = seq(0,max_distance, by=x_axis_spacing), limits = c(-20,max_distance))+
+  labs(x = "Distance (km)", y = "Frequency")+
+  facet_wrap(~year, nrow = 1)+
+  theme_minimal_hgrid()
+,
+as.data.frame(nnd_regional(hlb_utm,
+                           case = 3,
+                        regions = c("South","Central"),
+                        species = "Mandarins",
+                        start_season = start)) %>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+    filter(nnd>=0 & nnd<=max_nnd) %>%
+  group_by(year) %>% 
+  mutate(quant = quantile(nnd,.50)) %>% 
+  ggplot(aes(nnd))+
+  geom_histogram(color = "black",fill = "gray40", bins = bins)+
+  geom_vline(aes(xintercept = quant, group =year), color = "red")+
+  scale_x_continuous(breaks = seq(0,max_distance, by=x_axis_spacing), limits = c(-20,max_distance))+
+  labs(x = "Distance (km)", y = "Frequency")+
+  facet_wrap(~year, nrow = 1)+
+  theme_minimal_hgrid(),
+#plot grid config
+nrow = 3, labels = "AUTO")
+ggsave("figs/nnd_strata.png", dpi = 600, height =7, width = 10  )
+```
+
+```{r}
+start = 9
+nnd_data = data.frame(nnd_regional(hlb_utm,
+                                   case = 1,
+                                   region = "West",
+                                   species = "Sweet orange",
+                                   start_season = start)
+           ) %>% 
+  mutate(type = "West - Sweet orange") %>% 
+  bind_rows(
+data.frame(nnd_regional(hlb_utm,
+                        case =2,
+                        region = "South",
+                        species = "Sweet orange",
+                        start_season = start)) %>%
+  mutate(type = "South - Sweet orange")  
+    
+  )%>% 
+  bind_rows(
+    data.frame(nnd_regional(hlb_utm,
+                            case =3,
+                        region = c("South","Central"),
+                        species = "Mandarins",
+                        start_season = start)) %>% 
+      mutate(type = "South/Central - Mandarins")
+      )%>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year),
+         type = factor(type,levels =c("West - Sweet orange","South - Sweet orange","South/Central - Mandarins") ))
+```
+```{r}
+quantile_data = nnd_data%>% 
+  group_by(type) %>% 
+  summarise(quant = quantile(nnd,.99))
+quantile_data
+```
+
+#### plot
+
+
+```{r}
+
+nnd_region =  nnd_data%>% 
+    # filter(nnd>=0 & nnd<=300) %>%
+  group_by(type) %>% 
+  mutate(quant = quantile(nnd,.99)) %>%
+  ggplot()+
+  geom_rect(data = quantile_data ,
+            aes(xmin =0, xmax = quant,
+                ymin =0, ymax = Inf), 
+              alpha = 0.3, fill = "darkred"
+            )+
+  geom_histogram(aes(nnd),color = "black",fill = "steelblue",bins = 20)+
+  # geom_are(aes(xintercept = quant))+
+  facet_wrap(~type)+
+  theme_minimal_hgrid()+
+  labs(x = "Distance (km)", y = "Frequency")
+nnd_region
+
+```
+
+#### Model nnd
+ Whole state
+```{r}
+all_stata_nnd = as.data.frame(nnd_regional(hlb_utm, case = 4, start_season = 9 ))%>%
+  mutate(nnd = as.character(nnd), nnd = as.numeric(nnd),
+         year = as.character(year),year = as.numeric(year)) %>% 
+  filter(nnd>0)
+lm_nnd_geral = glmer(nnd ~(1|year/semester), family = Gamma, data = all_stata_nnd)
+# summary(lm_nnd_geral)
+
+overal_model_data = as.data.frame(emmeans::emmeans(lm_nnd_geral, ~1,transform="response")) %>% 
+  mutate(type = "Minas Gerais",
+         semester = "Year") %>% 
+  dplyr::select(-`1`)
+```
+
+
+```{r}
+lm_nnd = glmer(nnd ~ type*semester+(1|year), family = Gamma, data = nnd_data %>% filter(nnd>0))
+# summary(lm_nnd)
+as.data.frame(emmeans::emmeans(lm_nnd, ~type**semester, transform="response")) %>% 
+  bind_rows(overal_model_data) %>% 
+  mutate(type = factor(type,levels =c("Minas Gerais", "West - Sweet orange","South - Sweet orange","South/Central - Mandarins") )) %>% 
+  ggplot(aes(type, response, color =  semester))+
+  geom_errorbar(aes(ymin =asymp.LCL, ymax = asymp.UCL,),
+                size =1, position = position_dodge(width = 0.3),width =0)+
+  geom_point(position = position_dodge(width = 0.3),
+             size =3 ,alpha = 1)+
+  # facet_wrap(~type, nrow = 1)+
+  scale_color_manual(breaks = c("1","2"),
+                     values= (c("#004586","#FF420E","Black")))+
+  scale_shape_manual(values = c(19,19))+
+  scale_alpha_manual(values = c(1,0.5))+
+  labs(x = "",y ="Distance (km)",
+       color = "Semester")+
+  theme_minimal_grid()+
+  coord_flip()+
+  scale_y_continuous(breaks = seq(0,30, by=10), limits = c(0,30))+
+  # scale_x_discrete(guide = guide_axis(n.dodge = 2))+
+  theme(legend.position = "bottom")
+ggsave("figs/nnd_modeled.png", dpi = 600, height =4, width = 7  )
+
+```
+
+
+
+## O-Ring statístics
+
+```{r}
+ring = function(X, ..., i){
+       K12 <- Kcross(X, "0", "1")
+       g12 <- pcf(K12, method= "d", spar=0.7)
+       lambda2 <- summary(x)$marks["1","intensity"]
+       Oring <- eval.fv(lambda2 * g12) 
+       return(g12)
+}
+
+```
+ 
+```{r warning=FALSE}
+years = c("2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017","2018")#unique(hlb_utm$year)
+E_all = NULL
+for(i in 1:length(years)){
+for(k in 1:2){
+  try({
+OR_data = hlb_utm %>%
+    group_by(codigo,produtor, lat, lon) %>% 
+    mutate(inc = cumsum(count)) %>% 
+    ungroup() %>%
+  filter(year == years[i]) %>% 
+  filter(Semester == k) %>%
+  dplyr::select(lon,lat, prevalencia)%>% 
+  mutate(lon = lon/1000, lat = lat/1000, prevalencia = as.factor(prevalencia))
+
+W <- owin( c(min(OR_data$lon), max(OR_data$lon)), c(min(OR_data$lat), max(OR_data$lat)), inhomogeneous = T)
+x = as.ppp(OR_data, W=W)
+E <- envelope(x, ring, nsim = 99, nrank = 1, global = TRUE, i ="0", j =  "1",verbose = F)
+E = cbind(year = years[i], semester = k, as.matrix(E))
+E_all = rbind(E_all,E)
+}
+,
+silent = T)  
+}}
+
+```
+ 
+
+```{r}
+
+oring_plot = as.data.frame(E_all) %>% 
+  mutate(r = as.numeric(as.character(r)),
+         obs = as.numeric(as.character(obs)),
+         theo = as.numeric(as.character(theo)),
+         lo = as.numeric(as.character(lo)),
+         hi = as.numeric(as.character(hi)),
+         year2 = as.numeric(year)+2004) %>% 
+  # filter(year>2009) %>% 
+  # filter(year == "2018", semester == 2) %>%
+  ggplot()+
+  geom_ribbon(aes(r,ymin =lo, ymax = hi, fill = "95% CE"), alpha = 0.9)+
+  geom_line(aes(r,obs, group=semester, color = "Observed"),size = .5 )+
+  geom_line(aes(r, theo, color = "Theorical"),size = .5 )+
+  labs(x = "Distance (km)", y = "O-ring(r)", color ="", fill  = "")+
+  scale_fill_manual(values = "gray")+
+  theme_minimal_hgrid()+
+  facet_wrap(~year)+
+  scale_color_colorblind()
+oring_plot  
+ggsave("figs/oring.png", dpi = 600, height = 7, width = 8)
+```
+
+### Regional
+#### Function
+```{r}
+oring_regional = function(data, case){
+if(case ==1){
+   data2 = data %>%
+     filter(region %in% "West") %>%
+     filter(especie %in% "Sweet orange")
+}
+  if(case ==2){
+   data2 = data %>%
+     filter(region %in% "South") %>%
+     filter(especie %in% "Sweet orange")
+  }
+    if(case ==3){
+   data2 = data %>%
+     filter(region %in% c("South","Central")) %>%
+     filter(especie %in% "Mandarins")
+  }
+
+
+
+years = c("2018")#unique(hlb_utm$year)
+
+E_all = NULL
+for(i in 1:length(years)){
+for(k in 1:2){
+  try({
+OR_data = data2 %>%
+    group_by(codigo,produtor, lat, lon) %>% 
+    mutate(inc = cumsum(count)) %>% 
+    ungroup() %>%
+  filter(year == years[i]) %>% 
+  filter(Semester == k) %>%
+  dplyr::select(lon,lat, prevalencia)%>% 
+  mutate(lon = lon/1000, lat = lat/1000, prevalencia = as.factor(prevalencia))
+
+W <- owin( c(min(OR_data$lon), max(OR_data$lon)), c(min(OR_data$lat), max(OR_data$lat)), inhomogeneous = T)
+x = as.ppp(OR_data, W=W)
+E <- envelope(x, ring, nsim = 99, nrank = 1, global = TRUE, i ="0", j =  "1",verbose = F)
+E = cbind(year = years[i], semester = k, as.matrix(E))
+E_all = rbind(E_all,E)
+}
+,
+silent = T)  
+}}
+return(as.data.frame(E_all) %>% 
+          mutate(r = as.numeric(as.character(r)),
+         obs = as.numeric(as.character(obs)),
+         theo = as.numeric(as.character(theo)),
+         lo = as.numeric(as.character(lo)),
+         hi = as.numeric(as.character(hi))))
+}
+```
+
+#### Calculating oring
+```{r message=FALSE}
+regional_oring = oring_regional(data = hlb_utm,case = 1)%>% 
+  mutate(type = "West - Sweet orange") %>% 
+  bind_rows(
+oring_regional(data = hlb_utm,case = 2)%>% 
+  mutate(type = "South - Sweet orange")) %>% 
+  bind_rows(
+oring_regional(data = hlb_utm,case = 3)%>% 
+  mutate(type = "South/Central - Mandarins")) 
+  
+```
+
+##### Visualization
+```{r}
+region_oring = regional_oring %>%
+  mutate(type = factor(type,levels =c("West - Sweet orange","South - Sweet orange","South/Central - Mandarins") )) %>% 
+  ggplot()+
+  geom_ribbon(aes(r,ymin =lo, ymax = hi, fill = "95% CE"), alpha = 0.9)+
+  geom_line(aes(r,obs, linetype = semester,group=semester, color = "Observed"),size = 1 )+
+  geom_line(aes(r, theo, color = "Theorical"),size = 1 )+
+  labs(x = "Distance (km)", y = "O-ring(r)", color ="", fill  = "", linetype = "Semester")+
+  scale_fill_manual(values = "gray")+
+  theme_minimal_hgrid()+
+  facet_wrap(~type)+
+  scale_color_colorblind()+
+ theme(legend.position = "bottom")
+region_oring
+ggsave("figs/oring_regional.png", dpi = 600, height = 4, width = 8)
+```
+
+
+
+##### combo figures
+```{r}
+plot_grid(nnd_region, region_oring, 
+          nrow = 2,
+          labels = "AUTO", rel_heights =  c(0.8,1), scale = 1)
+ggsave("figs/combo_spt.png", dpi=600, height = 6, width = 8)
+```
+
+
+# MCA
+
+
+```{r}
+aaa = hlb_utm %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018",
+         Semester==2) %>% 
+  mutate(presenca = case_when(presenca== "Present" ~ "HLB present",
+                              presenca== "Absent" ~ "Not present"))
+
+mca1 = MCA(aaa[c(2,14,19:20)], graph = FALSE)
+ # summary(mca1)
+bp_prev = fviz_mca_biplot(mca1, axes = c(1,2), 
+             label = "var",
+             shape.var = NA,
+             col.var = "steelblue", # c("black", "blue", "red", "green"),
+             habillage = "presenca",
+             palette = c("orange","darkgreen"),
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             title = "") +
+  scale_fill_manual(name = "",values = c(NA,NA))+
+  theme_light()+
+  labs(color ="")+theme(legend.position = "bottom")
+bp_prev
+# ggsave("figs/mca_prevalence.png", dpi =600, height = 6, width =6)
+```
+
+
+```{r}
+bp_region = fviz_mca_biplot(mca1, 
+             label = "var",
+             col.var = NA, # c("black", "blue", "red", "green"),
+             habillage = "region",
+             shape.var = NA,
+             # palette = c("#999999", "#E69F00"),
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             title = "")+
+  scale_fill_manual(name = "",values = c(NA,NA,NA))+
+  theme_light()+
+  labs(color ="")+theme(legend.position = "bottom")
+# bp_region
+```
+
+```{r}
+bp_class = fviz_mca_biplot(mca1, axes = c(1,2), 
+             label = "var",
+             shape.var = NA,
+             col.var = NA, # c("black", "blue", "red", "green"),
+             habillage = "class",
+             face.var = "bold",
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             title = "")+
+  scale_color_viridis(name = "",discrete = T, direction = -1)+
+  scale_fill_manual(name = "",values = c(NA,NA,NA,NA))+
+  theme_light()+
+  theme(legend.position = "bottom")
+# bp_class
+```
+
+```{r}
+plot_grid(bp_prev, bp_region, bp_class, nrow = 1, labels = c("A","B","C"))
+# ggsave("figs/mca_plots.png", dpi =600, height = 6, width = 15)
+```
+
+
+don't run below, pretty heavy 
+
+
+# Maps
+
+```{r}
+BRA <- ne_states(
+  country = "Brazil",
+  returnclass = "sf"
+)
+# subset spatial objects of only the states of interest
+MG <- BRA[BRA$name_en == "Minas Gerais", ]
+```
+
+```{r}
+shape_MG = readOGR("shape_files/MG_Mesorregiao","MG_Mesorregiao_IBGE_2015_jul" )
+#
+shape_MG@data$id = rownames(shape_MG@data)
+MG_points = fortify(shape_MG)
+MG_df =plyr::join(MG_points, shape_MG@data, by="id")
+rm(MG_points)
+# plot(shape_MG)
+```
+
+
+
+
+```{r}
+shape_MG_mun = readOGR("shape_files/MG_municipios","MG_municipios_2014" )
+
+shape_MG_mun@data$id = rownames(shape_MG_mun@data)
+MG_points_mun = fortify(shape_MG_mun)
+MG_df_mun =plyr::join(MG_points_mun, shape_MG_mun@data, by="id")
+rm(MG_points_mun)
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = BRA, fill = "white", color = "gray70")+
+  geom_sf(data = MG, fill = "gray90", color = "gray70") +
+  # coord_sf(datum = NA) +
+  geom_point(data = hh_hlb, aes(lon, lat, size = Total_erradicadas),
+             shape = 1) +
+  ylim(-23, -14.5)+
+  xlim(-51.3, -40)
+
+```
+
+# Regions map
+```{r}
+region_map_data = MG_df %>% 
+  filter(NM_MESO %in% c("CENTRAL MINEIRA","TRIÃ‚NGULO MINEIRO/ALTO PARANAÃ\u008dBA","SUL/SUDOESTE DE MINAS","CAMPO DAS VERTENTES","METROPOLITANA DE BELO HORIZONTE","OESTE DE MINAS") ) %>% 
+  mutate(NM_MESO = case_when(NM_MESO == "TRIÃ‚NGULO MINEIRO/ALTO PARANAÃ\u008dBA" ~"West",
+                              NM_MESO %in% c("CENTRAL MINEIRA","METROPOLITANA DE BELO HORIZONTE") ~ "Central",
+                              NM_MESO %in% c("CAMPO DAS VERTENTES","SUL/SUDOESTE DE MINAS","OESTE DE MINAS" ) ~ "South"))
+
+
+```
+
+
+```{r}
+ggplot()+
+  geom_sf(data = BRA, fill = "white", color = "gray70")+
+  geom_sf(data = MG, fill = "gray90", color = "gray70") +
+  geom_point(data = hh_hlb, aes(lon, lat, color = class), alpha = 0.5)+
+  scale_color_viridis(direction = -1, discrete = T)+
+  # facet_wrap(~class) +
+  ylim(-23, -14.5)+
+  xlim(-51.3, -40)
+```
+
+
+## Species
+### mosaic 2
+Final incidence
+```{r}
+
+mosaic = hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  filter(year == "2018", Semester == 2) %>%
+  filter(presenca=="Present") %>% 
+  group_by(class, especie) %>% 
+  summarise(n = n(), mean_inc = mean((count/unique(total_plantas)))*100) %>% 
+  mutate(especie = factor(especie, levels = c("Mandarins", "Sweet orange", "Lemon", "Acid lime"))) %>% 
+  ggplot()+
+  geom_mosaic(aes(x = product(especie, class), weight = mean_inc, fill = especie),
+              color = NA,size =0.5,
+              alpha = 1)+
+   scale_fill_manual(values = c("#FF6600","#FFCC33","#669900","#CCFF00"))+
+  theme_tufte(ticks = FALSE, base_family = "sans")+
+  theme(
+    #axis.text.y = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0),
+        legend.position="none")+
+  labs(x = "", y = "", fill ="")
+mosaic
+# ggsave("figs/mosaic.png", dpi=600, height = 4, width=4.5)
+```
+
+
+
+```{r}
+map_sp_cl = hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)/unique(total_plantas)) %>% 
+  filter(year == "2018", Semester == 2, Incidencia!=0) %>% 
+  ggplot()+
+    geom_sf(data = BRA, fill = "white", color = "gray70")+
+    geom_sf(data = MG, fill = "gray90", color = "gray70") +
+    geom_point(aes(lon, lat, size = Incidencia, fill = especie), shape =21)+
+    scale_fill_manual(values = c("#CCFF00", "#669900", "#FFCC33", "#FF6600"))+
+    facet_grid(especie~class) +
+    scale_size(range = c(1,6), limits = c(0,100), breaks = c(0, 25, 50, 75, 100))+
+    guides(fill = guide_legend(override.aes = list(size=4)))+
+    ylim(-23, -18)+
+    xlim(-51, -43)+
+  labs(x = "Latitude", y = "Longitude", fill = "Specie", size = "Incidence")+
+  theme(axis.text = element_text(size = 6),
+        strip.text = element_text(color = "black"),
+    strip.background = element_rect(fill = "white"))
+map_sp_cl
+  # ggsave("figs/map_specie_class.png", dpi = 600, height = 6, width = 9)
+  
+```
+
+```{r}
+# plot_grid(plot_grid(NULL,mosaic, nrow =2, rel_heights = c(0.05,1)),
+#           plot_grid(map_sp_cl,NULL, rel_heights = c(1,0.1), nrow=2),
+#           nrow =1,
+#           rel_widths = c(0.3,1), align = "b", labels = "AUTO")
+# 
+# 
+# ggsave("figs/combo1.png", dpi = 600, height =6, width = 11)
+```
+
+
+
+## Temporal progress
+
+```{r}
+preg_curv = hh_hlb %>% 
+  # filter(prevalencia == 1) %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  group_by(region, class, year) %>% 
+  summarise(eradic = sum(cum_erradic)) %>% 
+  filter(eradic != 0) %>%
+  ggplot(aes(as.numeric(year), eradic/100000, color = class))+
+  geom_line(size = 1)+
+  geom_point()+
+  # scale_x_continuous(breaks = c(2005,2018))+
+  # scale_color_viridis(discrete = T, direction = -1)+
+  scale_color_colorblind()+
+  facet_wrap(~region)+
+  scale_x_continuous(breaks = seq(2006,2018,  by = 4), limits = c(2005, 2020))+
+
+  labs(x = "", y = expression("Erradication "~ 10^{5}), color = "")+
+  theme_minimal_grid()+
+  theme(legend.position = "none")
+preg_curv
+```
+
+
+
+```{r}
+map_prg = hh_hlb %>% 
+ 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(cum_erradic != 0,
+         especie %in% c("Mandarins","Sweet orange"),
+         year>2006) %>%
+  ggplot()+
+    geom_sf(data = BRA, fill = "white", color = "gray70")+
+    geom_sf(data = MG, fill = "gray90", color = "gray70") +
+    geom_point(aes(lon, lat, fill = especie),size = 1,color = "black", shape =21, alpha = 0.8)+
+    scale_fill_manual(values = c( "#FF6600", "#ffff00"))+
+  # scale_fill_colorblind()+
+    facet_wrap(~year, nrow = 4) +
+    scale_size(limits = c(0,30000), breaks = c(100, 5000, 10000, 15000, 20000))+
+    guides(fill = guide_legend(override.aes = list(size=4)))+
+    ylim(-23, -18)+
+    xlim(-51, -43)+
+  annotate("text", x= -49,y=-22, label="SP", size=3)+
+  labs(x = "Latitude", y = "Longitude", fill = "")+
+  theme(axis.text = element_text(size = 6),
+        strip.text = element_text(color = "black"),
+        strip.background = element_rect(fill = "white"),
+        legend.position = "bottom")
+
+map_prg
+  ggsave("figs/map_overtime.png", dpi = 600, height = 8, width = 7)
+```
+
+```{r}
+prev_mand_orn = hh_hlb %>% 
+  group_by(codigo, produtor, propriedade) %>% 
+  # filter(Semester ==2) %>% 
+  mutate(cum_erradic = cumsum(count)) %>% 
+  filter(cum_erradic != 0,
+         especie %in% c("Mandarins","Sweet orange"),
+         year>2006) %>%
+  mutate(year = as.numeric(year)) %>% 
+  group_by(year,especie) %>% 
+  summarise(prev = n()) %>% 
+  ggplot(aes(year,prev, fill = especie))+
+  geom_line(size = 1, color  = "black")+
+  geom_point(size = 3,shape =21)+
+  scale_fill_manual(values = c( "#FF6600", "#ffff00"))+
+  theme_minimal_hgrid(font_size = 10)+
+  scale_y_continuous(breaks = seq(0, 1500, by =400),limits = c(0,1500))+
+  scale_x_continuous(breaks = seq(2006,2018, by = 2), limits = c(2007, 2018))+
+  labs(x = "",y = "N. HLB-affected orchards",color ="")+
+  theme(legend.position = "none")
+prev_mand_orn
+```
+
+
+### combo 2
+
+```{r}
+
+plot_grid(
+  map_prg,
+  plot_grid(
+    prev_mand_orn, 
+    max_dist,NULL, scale = 0.9,
+    nrow = 3,rel_heights = c(1,1,0.15),labels = c("B","C")
+  ),
+  rel_widths = c(1,0.5),labels = c("A","")
+)
+ggsave("figs/map_combo.png",dpi= 600, height = 7, width = 10)
+```
+
+
+
+# gganimate
+
+<!-- ```{r} -->
+<!-- library(gganimate) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- anim =  hh_hlb %>%  -->
+<!--   # filter(prevalencia == 1) %>%  -->
+<!--   group_by(codigo, produtor, propriedade) %>%  -->
+<!--   # filter(Semester ==2) %>%  -->
+<!--   mutate(cum_erradic = cumsum(count)) %>%  -->
+<!--   filter(cum_erradic != 0) %>%  -->
+<!--  ggplot()+ -->
+<!--     geom_sf(data = BRA, fill = "white", color = "gray70")+ -->
+<!--     geom_sf(data = MG, fill = "gray90", color = "gray70") + -->
+<!--     geom_point(aes(lon, lat, fill = class, size = cum_erradic), shape = 21, alpha = 1)+ -->
+<!--     scale_fill_viridis(discrete = T, direction = -1)+ -->
+<!--     guides(fill = guide_legend(override.aes = list(size=4)))+ -->
+<!--     # ylim(-23, -18.5)+ -->
+<!--     # xlim(-51, -43)+ -->
+<!--    scale_size(limits = c(0,30000), breaks = c(100, 5000, 10000, 15000, 20000))+ -->
+<!--     ylim(-23, -14.5)+ -->
+<!--   xlim(-51.1, -40)+ -->
+<!--   labs(x = "Latitude", y = "Longitude", fill = "Orchard size", size = "Eradication")+ -->
+<!--   theme(axis.text = element_text(size = 6))+ -->
+<!--   transition_states(year, -->
+<!--                     transition_length = 0.05)+ -->
+<!--   enter_fade() + -->
+<!--   exit_shrink()+ -->
+<!--   exit_fade()+ -->
+<!--   ggtitle('Huanglongbing invasion in Minas Gerais, Brazil', -->
+<!--           subtitle = "Year: {closest_state}") -->
+<!-- animate(anim, width = 2000, height = 1200, res = 300) -->
+<!-- anim_save("figs/aniamtion.gif") -->
+<!-- ``` -->
+
+
+
+##  Big Map (Don't run) 
+
+```{r}
+IDs = unique(MG_df_mun$id)
+location2 = numeric(length(hh_hlb$lat))
+for(i in 1:length(IDs)){
+  qqq = MG_df_mun %>%
+    filter(id == IDs[i])
+
+  city = as.character(unique(qqq$NM_MUNICIP))
+
+  for(j in 1:length(hh_hlb$lat)) {
+
+    pip = point.in.polygon(point.x = hh_hlb$lon[j],
+                           point.y = hh_hlb$lat[j],
+                           pol.x = qqq$long,
+                           pol.y = qqq$lat)
+
+    if(pip > 0){location2[j] = city}
+  }
+}
+```
+
+
+```{r}
+hh_hlb_new = hh_hlb %>%
+  mutate(map_location = location2) %>%
+  mutate(NM_MUNICIP = map_location) %>%
+  group_by(codigo, produtor, propriedade) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  ungroup() %>% 
+  filter(year>=2018, Semester == 2) %>%
+  dplyr::select(presenca, NM_MUNICIP, region) %>% 
+  group_by(NM_MUNICIP) %>% 
+  summarise(presenca=max(presenca)) %>% 
+  # group_by(NM_MUNICIP) %>% 
+  # mutate(region = max(region)) %>% 
+  mutate(presenca = case_when(presenca== "Present" ~ "HLB present",
+                              presenca== "Absent" ~ "Not present"))
+
+median(c("Central", "South", "West"))
+```
+
+```{r}
+hlb_new_shape = left_join(MG_df_mun, hh_hlb_new , by = "NM_MUNICIP") %>%
+  filter(!is.na(presenca))# %>% 
+  #dplyr::select( -lon, -FONTE, -Datum_Atua, -Datum_Orig)
+
+```
+
+```{r }
+hlb_for_map = hh_hlb %>%
+  mutate(map_location = location2) %>%
+  mutate(NM_MUNICIP = map_location) %>%
+  group_by(codigo) %>% 
+  mutate(cum_erradic = cumsum(count)) %>%
+  ungroup() %>% 
+  filter(year>=2018, Semester == 2) %>%
+  dplyr::select(presenca, NM_MUNICIP,lat, lon)
+```
+
+```{r }
+new_scale <- function(new_aes) {
+   structure(ggplot2::standardise_aes_names(new_aes), class = "new_aes")
+}
+```
+
+```{r}
+library(ggnewscale)
+```
+
+##plot
+```{r}
+mun = ggplot()+
+  geom_sf( data = BRA, fill = "white", color = "gray80")+
+  geom_sf(data = MG, fill = "gray95", color = NA) +
+  geom_polygon(dat = region_map_data,
+               aes(long, lat, group = group, fill = NM_MESO),
+               color = NA,alpha=.4)+
+  scale_fill_manual("Region",values =c("#d1495b","#2e4057","#00798c"))+
+  new_scale("fill") +
+  geom_polygon(dat = hlb_new_shape,
+               aes(long, lat, group = group, fill = presenca),
+               color = "gray90", size = 0.3)+
+  geom_point(data = hlb_for_map,
+             aes(lon, lat, color = "Monitored orchards"),
+             size = 0.4)+
+  scale_fill_manual("HLB Status",values =c("orange","darkgreen"))+
+  scale_color_manual(values = "black")+
+  ylim(-23, -16)+
+  xlim(-52, -41)+
+  labs(x = "Longitude", y = "Latitude", color = "", fill = "")+
+  guides(color = guide_legend(override.aes = list(size=2.5)))+
+  north( location = "bottomright", scale = 0.08, symbol = 10,
+      x.min=-49, x.max=-41, y.min=-22, y.max=-14.5)+
+  ggsn::scalebar(location = "bottomright", dist = 100,
+           dist_unit = "km", transform = TRUE,x.min=-50,
+           x.max=-41, y.min=-23, y.max=-16,st.bottom = FALSE,
+           st.dist = 0.02, st.size = 3)+
+  annotate("text", x= -49,y=-22, label="SP", size=5)+
+  annotate("text", x= -44,y=-17, label="MG", size=5)+
+  theme_minimal_grid(font_size = 12)+
+  theme(legend.position = "right")
+mun
+
+ggsave("figs/map_presence.png", dpi = 600, height =7, width = 11 )
+```
+
+
+```{r}
+regi = ggplot()+
+  # geom_sf( data = BRA, fill = "white", color = "gray90")+
+  geom_sf(data = MG, fill = "gray60", color = NA) +
+  geom_polygon(dat = region_map_data, aes(long, lat, group = group, fill = NM_MESO), alpha=1) +
+  scale_fill_manual(values =c("#E69F00","#00BFC4","#003300"))+
+  ylim(-24, -13)+
+  xlim(-51.1, -40)+
+  labs(x = "Longitude", y = "Latitude", color = "", fill = "")+
+  guides(fill = guide_legend(override.aes = list(size=0.3)))+
+ theme_bw()+
+  # theme_void()+
+  theme(legend.position = "right",
+        legend.title = element_text(size = 6), 
+              legend.text  = element_text(size = 6),
+              legend.key.size = unit(.7, "lines"),
+        text = element_blank(),
+        # # panel.background = element_blank(),
+        panel.grid.major = element_line(colour = NA),
+        panel.grid.minor = element_line(colour = NA),
+        axis.ticks = element_blank()
+        )
+
+regi
+```
+
+```{r}
+ggdraw(mun) +
+  draw_plot(regi,0.1, 0.66, 0.36, 0.36)
+# ggsave("figs/map_presence.png", dpi = 600, height =7, width = 7.7 )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
